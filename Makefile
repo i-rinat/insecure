@@ -1,5 +1,5 @@
 CC = clang
-CFLAGS = -O2
+CFLAGS = -O0 -g3
 LIBS = 
 
 CFLAGS += `pkg-config --cflags fuse glib-2.0 sqlite3`
