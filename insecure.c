@@ -206,6 +206,19 @@ int insecure_mknod (const char *path, mode_t mode, dev_t dev) {
     return -ENOSYS;
 }
 
+int insecure_mkdir (const char *path, mode_t mode) {
+    printf ("mkdir %s, mode %06o\n", path, mode);
+    int ret;
+
+    gchar *back_path = insecure_insert_name_to_db (path);
+    if (NULL == back_path)
+        return -ENOENT;
+
+    ret = mkdir (back_path, mode);
+    g_free (back_path);
+
+    return ret;
+}
 
 int insecure_read (const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     printf("read\n");
@@ -252,6 +265,7 @@ int insecure_access(const char *path, int mask) {
 struct fuse_operations insecure_op = {
     .getattr = insecure_getattr,
     .mknod = insecure_mknod,
+    .mkdir = insecure_mkdir,
     .readdir = insecure_readdir,
     .init = insecure_init,
     .open = insecure_open,
