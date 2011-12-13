@@ -29,11 +29,70 @@ static const char *sql_create_tables =
 
 #define FS_DATA ((struct insecure_state *) fuse_get_context()->private_data)
 
+
+/// Inserts file path to database and returns string containing backpath
+///
+///
+static gchar *insecure_insert_name_to_db (const char *path) {
+    struct insecure_state *state = FS_DATA;
+    int rc;
+
+    sqlite3_stmt *stmt_ins;
+    sqlite3_prepare_v2 (state->db,
+        "INSERT OR IGNORE INTO fit (fname, parent) SELECT ?, id FROM fit WHERE fname=?;",
+        -1,
+        &stmt_ins,
+        NULL);
+    sqlite3_bind_text (stmt_ins, 1, path, -1, SQLITE_TRANSIENT);
+    gchar *parent_path = g_path_get_dirname (path);
+    sqlite3_bind_text (stmt_ins, 2, parent_path, -1, SQLITE_TRANSIENT);
+    g_free (parent_path);
+
+    rc = sqlite3_step (stmt_ins);
+    sqlite3_finalize (stmt_ins);
+
+    sqlite3_int64 rowid = sqlite3_last_insert_rowid (state->db);
+    sqlite3_stmt *stmt_sel;
+    sqlite3_prepare_v2 (state->db,
+        "SELECT fit.id, p.backname FROM fit, fit as p WHERE fit.ROWID=? AND p.id=fit.parent",
+        -1,
+        &stmt_sel,
+        NULL);
+    sqlite3_bind_int64 (stmt_sel, 1, rowid);
+    rc = sqlite3_step (stmt_sel);
+    if (SQLITE_ROW != rc) {
+        sqlite3_finalize (stmt_sel);
+        return NULL;
+    }
+
+    GString *backend_name = g_string_new (NULL);
+    g_string_printf (backend_name, "prefix_%d", sqlite3_column_int (stmt_sel, 0));
+
+    gchar *backend_path = g_build_path ("/", (gchar *)sqlite3_column_text (stmt_sel, 1), backend_name->str, NULL);
+
+    sqlite3_stmt *stmt_upd;
+    sqlite3_prepare_v2 (state->db,
+        "UPDATE fit SET backname = ? WHERE ROWID=?",
+        -1,
+        &stmt_upd,
+        NULL);
+    sqlite3_bind_text (stmt_upd, 1, backend_path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64 (stmt_upd, 2, rowid);
+    sqlite3_step (stmt_upd);
+    sqlite3_finalize (stmt_upd);
+
+    gchar *full_backend_path = g_build_path ("/", state->backend_point, backend_path, NULL);
+
+    g_free (backend_path);
+    g_string_free (backend_name, TRUE);
+
+    sqlite3_finalize (stmt_sel);
+    return full_backend_path;
+}
+
 int insecure_getattr (const char *path, struct stat *stbuf) {
     int ret;
     int rc;
-
-    gchar *full_path;
     struct insecure_state *state = FS_DATA;
 
     sqlite3_stmt *stmt;
@@ -131,66 +190,22 @@ int insecure_open (const char *path, struct fuse_file_info *fi) {
 
 int insecure_mknod (const char *path, mode_t mode, dev_t dev) {
     printf ("mknod %s, mode %06o\n", path, mode);
-    struct insecure_state *state = FS_DATA;
-    int rc;
     int ret;
 
     if (S_ISREG(mode)) {
-        sqlite3_stmt *stmt_ins;
-        sqlite3_prepare_v2 (state->db,
-            "INSERT OR IGNORE INTO fit (fname, parent) SELECT ?, id FROM fit WHERE fname=?;",
-            -1,
-            &stmt_ins,
-            NULL);
-        sqlite3_bind_text (stmt_ins, 1, path, -1, SQLITE_TRANSIENT);
-        gchar *parent_path = g_path_get_dirname (path);
-        sqlite3_bind_text (stmt_ins, 2, parent_path, -1, SQLITE_TRANSIENT);
-        g_free (parent_path);
+        gchar *back_path = insecure_insert_name_to_db (path);
+        if (NULL == back_path)
+            return -ENOENT;
 
-        rc = sqlite3_step (stmt_ins);
-        sqlite3_finalize (stmt_ins);
-
-        sqlite3_int64 rowid = sqlite3_last_insert_rowid (state->db);
-        sqlite3_stmt *stmt_sel;
-        sqlite3_prepare_v2 (state->db,
-            "SELECT fit.id, p.backname FROM fit, fit as p WHERE fit.ROWID=? AND p.id=fit.parent",
-            -1,
-            &stmt_sel,
-            NULL);
-        sqlite3_bind_int64 (stmt_sel, 1, rowid);
-        rc = sqlite3_step (stmt_sel);
-        if (SQLITE_ROW == rc) {
-            GString *backend_name = g_string_new (NULL);
-            g_string_printf (backend_name, "prefix_%d", sqlite3_column_int (stmt_sel, 0));
-
-            gchar *backend_path = g_build_path ("/", (gchar *)sqlite3_column_text (stmt_sel, 1), backend_name->str, NULL);
-
-            sqlite3_stmt *stmt_upd;
-            sqlite3_prepare_v2 (state->db,
-                "UPDATE fit SET backname = ? WHERE ROWID=?",
-                -1,
-                &stmt_upd,
-                NULL);
-            sqlite3_bind_text (stmt_upd, 1, backend_path, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64 (stmt_upd, 2, rowid);
-            sqlite3_step (stmt_upd);
-            sqlite3_finalize (stmt_upd);
-
-            gchar *full_backend_path = g_build_path ("/", state->backend_point, backend_path, NULL);
-            ret = open(full_backend_path, O_CREAT | O_EXCL | O_WRONLY, mode);
-
-            g_free (full_backend_path);
-            g_free (backend_path);
-            g_string_free (backend_name, TRUE);
-        } //select
-
-        sqlite3_finalize (stmt_sel);
+        ret = open(back_path, O_CREAT | O_EXCL | O_WRONLY, mode);
+        g_free (back_path);
 
         return ret;
     }
 
-    return -EACCES;
+    return -ENOSYS;
 }
+
 
 int insecure_read (const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     printf("read\n");
@@ -207,7 +222,7 @@ int insecure_read (const char *path, char *buf, size_t size, off_t offset, struc
 int insecure_write (const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     printf("write\n");
 
-    return 0;
+    return -EACCES;
 }
 
 int insecure_access(const char *path, int mask) {
