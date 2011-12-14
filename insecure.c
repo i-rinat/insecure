@@ -146,7 +146,7 @@ int insecure_getattr (const char *path, struct stat *stbuf) {
         printf ("+ '%s', '%s'\n", path, sqlite3_column_text (stmt, 0));
 
         gchar *full_path = g_build_path ("/", state->backend_point, sqlite3_column_text (stmt, 0), NULL);
-        ret = stat (full_path, stbuf);
+        ret = lstat (full_path, stbuf);
         g_free (full_path);
     } else {
         printf ("- '%s'\n", path);
@@ -409,6 +409,30 @@ int insecure_rmdir (const char *path) {
     return -errno;
 }
 
+int insecure_symlink (const char *path, const char *dest) {
+    insecure_flush_tables ();
+    printf ("symlink '%s' to '%s'\n", path, dest);
+
+    gchar *full_backname = insecure_insert_name_to_db (dest);
+    int ret = symlink (path, full_backname);
+    g_free (full_backname);
+
+    return ret;
+}
+
+int insecure_readlink (const char *path, char *link, size_t size) {
+    insecure_flush_tables ();
+
+    gchar *backname = insecure_get_backname (path);
+    gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
+
+    ssize_t ret = readlink (full_backname, link, size - 1);
+    if (ret < 0) return -errno;
+
+    link[ret] = 0;
+    return 0;
+}
+
 
 struct fuse_operations insecure_op = {
     .getattr = insecure_getattr,
@@ -425,6 +449,8 @@ struct fuse_operations insecure_op = {
     .truncate = insecure_truncate,
     .utimens = insecure_utimens,
     .unlink = insecure_unlink,
+    .symlink = insecure_symlink,
+    .readlink = insecure_readlink,
     .rmdir = insecure_rmdir,
 };
 
