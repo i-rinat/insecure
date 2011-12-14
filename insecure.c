@@ -29,7 +29,6 @@ static const char *sql_create_tables =
 
 #define FS_DATA ((struct insecure_state *) fuse_get_context()->private_data)
 
-
 /// Inserts file path to database and returns string containing backpath
 ///
 /// caller must free returned string with g_free()
@@ -154,6 +153,11 @@ void *insecure_init (struct fuse_conn_info *conn) {
     printf ("rc = %d\n", rc);
 
     return FS_DATA;
+}
+
+void insecure_destroy (void *p) {
+    printf ("shutting down\n");
+    sqlite3_close (FS_DATA->db);
 }
 
 int insecure_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
@@ -309,6 +313,7 @@ int insecure_utimens (const char *path, const struct timespec tv[2]) {
     int fd = open (full_backname, O_RDONLY);
     if (fd < 0) return -errno;
     int ret = futimens (fd, tv);
+    close (fd);
 
     g_free (backname);
     g_free (full_backname);
@@ -318,6 +323,25 @@ int insecure_utimens (const char *path, const struct timespec tv[2]) {
     return 0;
 }
 
+int insecure_unlink (const char *path) {
+    gchar *backname = insecure_get_backname (path);
+    gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
+    printf ("unlink '%s'\n", path);
+
+    int ret = unlink (full_backname);
+    g_free (backname);
+    g_free (full_backname);
+
+    sqlite3_stmt *stmt;
+
+    sqlite3_prepare_v2 (FS_DATA->db, "DELETE FROM fit WHERE fname=?", -1, &stmt, NULL);
+    sqlite3_bind_text (stmt, 1, path, -1, SQLITE_TRANSIENT);
+    sqlite3_step (stmt);
+    sqlite3_finalize (stmt);
+    if (0 == ret) return 0;
+
+    return -errno;
+}
 
 struct fuse_operations insecure_op = {
     .getattr = insecure_getattr,
@@ -325,12 +349,14 @@ struct fuse_operations insecure_op = {
     .mkdir = insecure_mkdir,
     .readdir = insecure_readdir,
     .init = insecure_init,
+    .destroy = insecure_destroy,
     .open = insecure_open,
     .read = insecure_read,
     .write = insecure_write,
     .access = insecure_access,
     .truncate = insecure_truncate,
     .utimens = insecure_utimens,
+    .unlink = insecure_unlink,
 };
 
 int main (int argc, char *argv[]) {
@@ -349,8 +375,8 @@ int main (int argc, char *argv[]) {
     state->mount_point_len = strlen (state->mount_point);
     state->backend_point_len = strlen (state->backend_point);
 
-    int f_argc = 5;
-    char *f_argv[] = {argv[0], "-f", "-o", "nonempty", state->mount_point};
+    int f_argc = 6;
+    char *f_argv[] = {argv[0], "-f", "-s", "-o", "nonempty", state->mount_point};
 
     res = fuse_main (f_argc, f_argv, &insecure_op, state);
     printf ("fuse_main returned %d\n", res);
