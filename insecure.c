@@ -366,6 +366,27 @@ int insecure_unlink (const char *path) {
     return -errno;
 }
 
+int insecure_rmdir (const char *path) {
+    gchar *backname = insecure_get_backname (path);
+    gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
+    printf ("rmdir '%s'\n", path);
+
+    int ret = rmdir (full_backname);
+    g_free (backname);
+    g_free (full_backname);
+
+    sqlite3_stmt *stmt;
+
+    sqlite3_prepare_v2 (FS_DATA->db, "DELETE FROM fit WHERE fname=?", -1, &stmt, NULL);
+    sqlite3_bind_text (stmt, 1, path, -1, SQLITE_TRANSIENT);
+    sqlite3_step (stmt);
+    sqlite3_finalize (stmt);
+    if (0 == ret) return 0;
+
+    return -errno;
+}
+
+
 struct fuse_operations insecure_op = {
     .getattr = insecure_getattr,
     .mknod = insecure_mknod,
@@ -381,6 +402,7 @@ struct fuse_operations insecure_op = {
     .truncate = insecure_truncate,
     .utimens = insecure_utimens,
     .unlink = insecure_unlink,
+    .rmdir = insecure_rmdir,
 };
 
 int main (int argc, char *argv[]) {
