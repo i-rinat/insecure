@@ -95,7 +95,7 @@ static gchar *insecure_get_backname (const gchar *fname) {
     sqlite3_stmt *stmt;
     int rc;
 
-    sqlite3_prepare (state->db, "SELECT backname FROM fit WHERE fname=?", -1, &stmt, NULL);
+    sqlite3_prepare_v2 (state->db, "SELECT backname FROM fit WHERE fname=?", -1, &stmt, NULL);
     sqlite3_bind_text (stmt, 1, fname, -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step (stmt);
