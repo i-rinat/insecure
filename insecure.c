@@ -29,12 +29,23 @@ static const char *sql_create_tables =
 
 #define FS_DATA ((struct insecure_state *) fuse_get_context()->private_data)
 
+static void insecure_flush_tables () {
+    static int counter = 0;
+
+    counter ++;
+    if ((counter & 0x1ff) == 0) {
+        sqlite3_exec (FS_DATA->db, "COMMIT; BEGIN TRANSACTION;", NULL, NULL, NULL);
+    }
+}
+
 /// Inserts file path to database and returns string containing backpath
 ///
 /// caller must free returned string with g_free()
 static gchar *insecure_insert_name_to_db (const char *path) {
     struct insecure_state *state = FS_DATA;
     int rc;
+
+    insecure_flush_tables ();
 
     sqlite3_stmt *stmt_ins;
     sqlite3_prepare_v2 (state->db,
@@ -94,6 +105,8 @@ static gchar *insecure_get_backname (const gchar *fname) {
     sqlite3_stmt *stmt;
     int rc;
 
+    insecure_flush_tables ();
+
     sqlite3_prepare_v2 (state->db, "SELECT backname FROM fit WHERE fname=?", -1, &stmt, NULL);
     sqlite3_bind_text (stmt, 1, fname, -1, SQLITE_TRANSIENT);
 
@@ -151,6 +164,8 @@ void *insecure_init (struct fuse_conn_info *conn) {
     // FIXME: error handling
     rc = sqlite3_exec (state->db, sql_create_tables, NULL, 0, NULL);
     printf ("rc = %d\n", rc);
+
+    sqlite3_exec (state->db, "BEGIN TRANSACTION;", NULL, NULL, NULL);
 
     return FS_DATA;
 }
