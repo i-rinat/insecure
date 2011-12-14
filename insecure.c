@@ -36,8 +36,7 @@ static void insecure_flush_tables () {
 
     counter ++;
     time_t current = time(NULL);
-    if ((counter > 4000) || (current - state->last_flush > 5)) {
-        printf ("========================= flush ===========================\n");
+    if ((counter > 4000) || (current - state->last_flush > 2)) {
         sqlite3_exec (FS_DATA->db, "COMMIT; BEGIN TRANSACTION;", NULL, NULL, NULL);
         counter = 0;
         state->last_flush = current;
