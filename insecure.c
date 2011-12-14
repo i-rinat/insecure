@@ -32,7 +32,7 @@ static const char *sql_create_tables =
 
 /// Inserts file path to database and returns string containing backpath
 ///
-///
+/// caller must free returned string with g_free()
 static gchar *insecure_insert_name_to_db (const char *path) {
     struct insecure_state *state = FS_DATA;
     int rc;
@@ -90,10 +90,30 @@ static gchar *insecure_insert_name_to_db (const char *path) {
     return full_backend_path;
 }
 
+static gchar *insecure_get_backname (const gchar *fname) {
+    struct insecure_state *state = FS_DATA;
+    sqlite3_stmt *stmt;
+    int rc;
+
+    sqlite3_prepare (state->db, "SELECT backname FROM fit WHERE fname=?", -1, &stmt, NULL);
+    sqlite3_bind_text (stmt, 1, fname, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step (stmt);
+    if (SQLITE_ROW != rc) {
+        sqlite3_finalize (stmt);
+        return NULL;
+    }
+    gchar *ret = g_strdup ((gchar *)sqlite3_column_text (stmt, 0));
+    sqlite3_finalize (stmt);
+    return ret;
+}
+
 int insecure_getattr (const char *path, struct stat *stbuf) {
     int ret;
     int rc;
     struct insecure_state *state = FS_DATA;
+
+    printf ("stat '%s'\n", path);
 
     sqlite3_stmt *stmt;
     rc = sqlite3_prepare_v2 (state->db, "SELECT backname FROM fit WHERE fname=?;", -1, &stmt, NULL);
@@ -104,14 +124,13 @@ int insecure_getattr (const char *path, struct stat *stbuf) {
     // printf ("sqlite3_step rc = %d\n", rc);
 
     if (SQLITE_ROW == rc) {
-        printf ("there is a file named %s, ", path);
-        printf ("and it backed at file %s\n", sqlite3_column_text (stmt, 0));
+        printf ("+ '%s', '%s'\n", path, sqlite3_column_text (stmt, 0));
 
         gchar *full_path = g_build_path ("/", state->backend_point, sqlite3_column_text (stmt, 0), NULL);
         ret = stat (full_path, stbuf);
         g_free (full_path);
     } else {
-        printf ("there is no file named %s\n", path);
+        printf ("- '%s'\n", path);
         ret = -ENOENT;
     }
 
@@ -173,37 +192,40 @@ int insecure_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t
 }
 
 int insecure_open (const char *path, struct fuse_file_info *fi) {
-    printf ("open\n");
-    /*
-    gchar *full_path = g_build_path ("/", FS_DATA->backend_point, path, NULL);
-    int fd = open (full_path, fi->flags);
-    if (fd < 0) {
-        return -errno;
-    }
-    fi->fh = (unsigned int) fd;
-    printf ("handle %d\n", fd);
-    */
+    printf ("open '%s'\n", path);
 
+    gchar *backname = insecure_get_backname (path);
+    gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
 
+    int fd = open (full_backname, fi->flags);
+
+    g_free (full_backname);
+    g_free (backname);
+
+    if (fd < 0) return -errno;
+
+    fi->fh = fd;
     return 0;
 }
 
 int insecure_mknod (const char *path, mode_t mode, dev_t dev) {
     printf ("mknod %s, mode %06o\n", path, mode);
-    int ret;
+    int fd;
 
     if (S_ISREG(mode)) {
         gchar *back_path = insecure_insert_name_to_db (path);
         if (NULL == back_path)
             return -ENOENT;
 
-        ret = open(back_path, O_CREAT | O_EXCL | O_WRONLY, mode);
+        fd = open(back_path, O_CREAT | O_EXCL | O_WRONLY, mode);
         g_free (back_path);
 
-        return ret;
+        if (fd < 0) return -errno;
+
+        return close (fd);
     }
 
-    return -ENOSYS;
+    return -EACCES;
 }
 
 int insecure_mkdir (const char *path, mode_t mode) {
@@ -221,7 +243,7 @@ int insecure_mkdir (const char *path, mode_t mode) {
 }
 
 int insecure_read (const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    printf("read\n");
+    printf("read of %s\n", path);
     if ((off_t)-1 == lseek (fi->fh, offset, SEEK_SET)) {
         return -errno;
     }
@@ -233,9 +255,15 @@ int insecure_read (const char *path, char *buf, size_t size, off_t offset, struc
 }
 
 int insecure_write (const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    printf("write\n");
+    printf("write of '%s'\n", path);
+    if ((off_t)-1 == lseek (fi->fh, offset, SEEK_SET)) {
+        return -errno;
+    }
 
-    return -EACCES;
+    size_t bytes_written = write (fi->fh, buf, size);
+    if (-1 == bytes_written) return -errno;
+
+    return bytes_written;
 }
 
 int insecure_access(const char *path, int mask) {
@@ -261,6 +289,35 @@ int insecure_access(const char *path, int mask) {
     return ret;
 }
 
+int insecure_truncate (const char *path, off_t newsize) {
+    printf ("truncate\n");
+    struct insecure_state *state = FS_DATA;
+
+    gchar *backname = insecure_get_backname (path);
+    gchar *full_backname = g_build_path ("/", state->backend_point, backname, NULL);
+
+    int ret = truncate (full_backname, newsize);
+    g_free (full_backname);
+    g_free (backname);
+    return ret;
+}
+
+int insecure_utimens (const char *path, const struct timespec tv[2]) {
+    gchar *backname = insecure_get_backname (path);
+    gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
+
+    int fd = open (full_backname, O_RDONLY);
+    if (fd < 0) return -errno;
+    int ret = futimens (fd, tv);
+
+    g_free (backname);
+    g_free (full_backname);
+
+    if (ret < 0) return -errno;
+
+    return 0;
+}
+
 
 struct fuse_operations insecure_op = {
     .getattr = insecure_getattr,
@@ -272,6 +329,8 @@ struct fuse_operations insecure_op = {
     .read = insecure_read,
     .write = insecure_write,
     .access = insecure_access,
+    .truncate = insecure_truncate,
+    .utimens = insecure_utimens,
 };
 
 int main (int argc, char *argv[]) {
