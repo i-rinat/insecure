@@ -227,6 +227,14 @@ int insecure_open (const char *path, struct fuse_file_info *fi) {
     return 0;
 }
 
+int insecure_release (const char *path, struct fuse_file_info *fi) {
+    printf ("close '%s'\n", path);
+
+    int ret = close (fi->fh);
+
+    return ret;
+}
+
 int insecure_mknod (const char *path, mode_t mode, dev_t dev) {
     printf ("mknod %s, mode %06o\n", path, mode);
     int fd;
@@ -366,6 +374,7 @@ struct fuse_operations insecure_op = {
     .init = insecure_init,
     .destroy = insecure_destroy,
     .open = insecure_open,
+    .release = insecure_release,
     .read = insecure_read,
     .write = insecure_write,
     .access = insecure_access,
