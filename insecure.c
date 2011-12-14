@@ -20,6 +20,7 @@ struct insecure_state {
     char *backend_point; // backend path
     int backend_point_len;
     sqlite3 *db;
+    time_t last_flush;
 };
 
 static const char *sql_create_tables =
@@ -30,11 +31,16 @@ static const char *sql_create_tables =
 #define FS_DATA ((struct insecure_state *) fuse_get_context()->private_data)
 
 static void insecure_flush_tables () {
+    struct insecure_state *state = FS_DATA;
     static int counter = 0;
 
     counter ++;
-    if ((counter & 0x1ff) == 0) {
+    time_t current = time(NULL);
+    if ((counter > 4000) || (current - state->last_flush > 5)) {
+        printf ("========================= flush ===========================\n");
         sqlite3_exec (FS_DATA->db, "COMMIT; BEGIN TRANSACTION;", NULL, NULL, NULL);
+        counter = 0;
+        state->last_flush = current;
     }
 }
 
@@ -125,6 +131,8 @@ int insecure_getattr (const char *path, struct stat *stbuf) {
     int rc;
     struct insecure_state *state = FS_DATA;
 
+    insecure_flush_tables ();
+
     printf ("stat '%s'\n", path);
 
     sqlite3_stmt *stmt;
@@ -181,6 +189,8 @@ int insecure_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t
     struct insecure_state *state = FS_DATA;
     int rc;
 
+    insecure_flush_tables ();
+
     sqlite3_stmt *stmt;
 
     rc = sqlite3_prepare_v2 (state->db,
@@ -212,6 +222,7 @@ int insecure_readdir (const char *path, void *buf, fuse_fill_dir_t filler, off_t
 
 int insecure_open (const char *path, struct fuse_file_info *fi) {
     printf ("open '%s'\n", path);
+    insecure_flush_tables ();
 
     gchar *backname = insecure_get_backname (path);
     gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
@@ -229,6 +240,7 @@ int insecure_open (const char *path, struct fuse_file_info *fi) {
 
 int insecure_release (const char *path, struct fuse_file_info *fi) {
     printf ("close '%s'\n", path);
+    insecure_flush_tables ();
 
     int ret = close (fi->fh);
 
@@ -237,6 +249,7 @@ int insecure_release (const char *path, struct fuse_file_info *fi) {
 
 int insecure_mknod (const char *path, mode_t mode, dev_t dev) {
     printf ("mknod %s, mode %06o\n", path, mode);
+    insecure_flush_tables ();
     int fd;
 
     if (S_ISREG(mode)) {
@@ -257,6 +270,7 @@ int insecure_mknod (const char *path, mode_t mode, dev_t dev) {
 
 int insecure_mkdir (const char *path, mode_t mode) {
     printf ("mkdir %s, mode %06o\n", path, mode);
+    insecure_flush_tables ();
     int ret;
 
     gchar *back_path = insecure_insert_name_to_db (path);
@@ -271,6 +285,7 @@ int insecure_mkdir (const char *path, mode_t mode) {
 
 int insecure_read (const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     printf("read of %s\n", path);
+    insecure_flush_tables ();
     if ((off_t)-1 == lseek (fi->fh, offset, SEEK_SET)) {
         return -errno;
     }
@@ -283,6 +298,7 @@ int insecure_read (const char *path, char *buf, size_t size, off_t offset, struc
 
 int insecure_write (const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     printf("write of '%s'\n", path);
+    insecure_flush_tables ();
     if ((off_t)-1 == lseek (fi->fh, offset, SEEK_SET)) {
         return -errno;
     }
@@ -295,6 +311,7 @@ int insecure_write (const char *path, const char *buf, size_t size, off_t offset
 
 int insecure_access(const char *path, int mask) {
     printf ("access to '%s', mask %06o\n", path, mask);
+    insecure_flush_tables ();
     struct insecure_state *state = FS_DATA;
     sqlite3_stmt *stmt;
     int rc;
@@ -318,6 +335,7 @@ int insecure_access(const char *path, int mask) {
 
 int insecure_truncate (const char *path, off_t newsize) {
     printf ("truncate\n");
+    insecure_flush_tables ();
     struct insecure_state *state = FS_DATA;
 
     gchar *backname = insecure_get_backname (path);
@@ -330,6 +348,8 @@ int insecure_truncate (const char *path, off_t newsize) {
 }
 
 int insecure_utimens (const char *path, const struct timespec tv[2]) {
+    insecure_flush_tables ();
+
     gchar *backname = insecure_get_backname (path);
     gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
 
@@ -347,6 +367,8 @@ int insecure_utimens (const char *path, const struct timespec tv[2]) {
 }
 
 int insecure_unlink (const char *path) {
+    insecure_flush_tables ();
+
     gchar *backname = insecure_get_backname (path);
     gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
     printf ("unlink '%s'\n", path);
@@ -367,6 +389,8 @@ int insecure_unlink (const char *path) {
 }
 
 int insecure_rmdir (const char *path) {
+    insecure_flush_tables ();
+
     gchar *backname = insecure_get_backname (path);
     gchar *full_backname = g_build_path ("/", FS_DATA->backend_point, backname, NULL);
     printf ("rmdir '%s'\n", path);
