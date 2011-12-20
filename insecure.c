@@ -460,13 +460,13 @@ int main (int argc, char *argv[]) {
 
     state = (struct insecure_state *) calloc (sizeof(struct insecure_state), 1);
 
-    if (argc < 2) {
+    if (argc < 3) {
         printf("need more arguments\n");
         exit(1);
     }
 
-    state->mount_point = argv[1];
-    state->backend_point = argv[2];
+    state->backend_point = argv[1];
+    state->mount_point = argv[2];
     state->mount_point_len = strlen (state->mount_point);
     state->backend_point_len = strlen (state->backend_point);
 
