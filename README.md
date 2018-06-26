@@ -1,3 +1,5 @@
+See [https://github.com/i-rinat/longnamefs](https://github.com/i-rinat/longnamefs).
+
 About
 =====
 
